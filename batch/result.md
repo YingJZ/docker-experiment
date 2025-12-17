@@ -30,7 +30,6 @@ envs OMP_NUM_THREADS= MKL_NUM_THREADS= OPENBLAS_NUM_THREADS=
 [7.441s] Inference Done. Avg Latency: 28.23 ms
 ```
 
-
 ### Docker
 
 ```bash
