@@ -14,7 +14,7 @@ subprocess.run("sync; echo 3 | sudo tee /proc/sys/vm/drop_caches", shell=True, c
 
 2. 每次实验前都先预热一下，可能先运行 3 次，然后从第 4 次开始取 5～10 次的平均数据
 
-- 缺点：这样会不会就不算冷启动了？可能这种更接近服务器的场景，但是我们的场景是不是在终端上·
+- 缺点：这样会不会就不算冷启动了？可能这种更接近服务器的场景，但是我们的场景是不是在终端上
 
 ```bash
 (experiment) yingjiaze@haslab4:~/experiment/batch$ date +%s%3N && taskset -c 0,1 python benchmark.py
