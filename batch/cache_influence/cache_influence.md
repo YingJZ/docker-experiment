@@ -16,6 +16,8 @@ subprocess.run("sync; echo 3 | sudo tee /proc/sys/vm/drop_caches", shell=True, c
 
 - 缺点：这样会不会就不算冷启动了？可能这种更接近服务器的场景，但是我们的场景是不是在终端上
 
+实验记录：
+
 ```bash
 (experiment) yingjiaze@haslab4:~/experiment/batch$ date +%s%3N && taskset -c 0,1 python benchmark.py
 1766135238901

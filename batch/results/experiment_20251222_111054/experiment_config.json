@@ -1,0 +1,10 @@
+{
+  "start_time": "20251222_111054",
+  "total_cpus": "0-1",
+  "total_cpu_cores": 2.0,
+  "total_memory_mb": 2048,
+  "volume": "/home/yingjiaze/experiment/batch:/app",
+  "max_instances": 8,
+  "warmup_runs": 2,
+  "note": "All containers share the total resource limits, not per-container limits"
+}

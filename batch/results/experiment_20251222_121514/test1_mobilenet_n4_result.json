@@ -1,0 +1,13 @@
+{
+  "test_name": "test1_mobilenet_n4",
+  "num_instances": 4,
+  "app_config": [
+    "mobilenet",
+    "mobilenet",
+    "mobilenet",
+    "mobilenet"
+  ],
+  "timestamp": 1766405718.2533395,
+  "memory_full": false,
+  "containers": []
+}
