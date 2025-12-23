@@ -510,7 +510,7 @@ def parse_cpus(cpus_str: str) -> float:
 
 def run_concurrent_test(test_name: str, app_config: List[str], 
                        total_cpus: str, volume: str,
-                       total_memory_mb: int = 2048, warmup_runs: int = 1) -> TestResult:
+                       total_memory_mb: int = 2048) -> TestResult:
     """
     运行并发测试
     注意：所有容器共享总资源限制，而不是每个容器独立限制
@@ -521,7 +521,6 @@ def run_concurrent_test(test_name: str, app_config: List[str],
         total_cpus: 所有容器共享的总CPU，如 "0-1" 表示2核
         volume: 卷挂载，如 "/path/to/app:/app"
         total_memory_mb: 所有容器共享的总内存限制(MB)，用于判断是否内存满
-        warmup_runs: 预热运行次数，默认2次，第3次(即warmup_runs+1次)才记录结果
     """
     app_script_map = {
         'mobilenet': 'benchmark.py',
@@ -543,7 +542,6 @@ def run_concurrent_test(test_name: str, app_config: List[str],
     print(f"App config: {app_config}")
     print(f"Total CPU cores (shared): {total_cpu_cores}")
     print(f"Total memory limit (shared): {total_memory_mb} MB")
-    print(f"Warmup runs: {warmup_runs} (will record run #{warmup_runs + 1})")
     print(f"{'='*60}\n")
     
     # 创建资源限制的 slice
@@ -551,56 +549,13 @@ def run_concurrent_test(test_name: str, app_config: List[str],
     if not slice_name:
         print("Warning: Failed to create resource-limited slice, running without resource limits")
     
-    try:
-        # 预热运行：运行warmup_runs次预热
-        for warmup_idx in range(warmup_runs):
-            print(f"Warmup run {warmup_idx + 1}/{warmup_runs}...")
-            warmup_containers_info = []
-            
-            for idx, app_name in enumerate(app_config):
-                warmup_container_name = f"{test_name}_warmup_{warmup_idx}_container_{idx}_{int(time.time() * 1000)}"
-                script_name = app_script_map.get(app_name, 'benchmark.py')
-                
-                try:
-                    container_id, _, _, _, _ = run_container(
-                        app_name, warmup_container_name, slice_name, volume, script_name
-                    )
-                    warmup_containers_info.append({
-                        'container_id': container_id,
-                        'container_name': warmup_container_name
-                    })
-                except Exception as e:
-                    print(f"Warning: Warmup container {idx} failed: {e}")
-        
-        # 清理预热容器
-        for warmup_info in warmup_containers_info:
-            try:
-                subprocess.run(['docker', 'rm', '-f', warmup_info['container_name']], 
-                             capture_output=True, timeout=5)
-            except Exception:
-                pass
-        
-        if warmup_idx < warmup_runs - 1:
-            time.sleep(1)  # 预热运行之间稍作等待
-    
-    except Exception as e:
-        print(f"Error in concurrent test: {e}")
-        import traceback
-        traceback.print_exc()
-        return TestResult(
-            test_name=test_name,
-            num_instances=num_instances,
-            app_config=app_config,
-            container_metrics=[],
-            timestamp=time.time(),
-            memory_full=False
-        )
-    
     # 实际测试运行（第warmup_runs+1次）
+    # 并发启动所有容器
     containers_info = []
-    start_all_time = time.time()
+    containers_info_lock = threading.Lock()
     
-    for idx, app_name in enumerate(app_config):
+    def run_container_thread(idx, app_name):
+        """在线程中运行容器"""
         container_name = f"{test_name}_container_{idx}_{int(time.time() * 1000)}"
         script_name = app_script_map.get(app_name, 'benchmark.py')
         
@@ -608,23 +563,37 @@ def run_concurrent_test(test_name: str, app_config: List[str],
             container_id, start_duration, output, runtime_metrics, docker_start_time = run_container(
                 app_name, container_name, slice_name, volume, script_name
             )
-            containers_info.append({
-                'idx': idx,
-                'app_name': app_name,
-                'container_id': container_id,
-                'container_name': container_name,
-                'start_duration': start_duration,
-                'output': output,
-                'runtime_metrics': runtime_metrics,
-                'docker_start_time': docker_start_time,
-            })
+            
+            with containers_info_lock:
+                containers_info.append({
+                    'idx': idx,
+                    'app_name': app_name,
+                    'container_id': container_id,
+                    'container_name': container_name,
+                    'start_duration': start_duration,
+                    'output': output,
+                    'runtime_metrics': runtime_metrics,
+                    'docker_start_time': docker_start_time,
+                })
         except Exception as e:
             print(f"Failed to run container {idx} ({app_name}): {e}")
             import traceback
             traceback.print_exc()
     
+    # 启动所有容器的线程
+    start_all_time = time.time()
+    threads = []
+    for idx, app_name in enumerate(app_config):
+        thread = threading.Thread(target=run_container_thread, args=(idx, app_name))
+        thread.start()
+        threads.append(thread)
+    
+    # 等待所有容器完成
+    for thread in threads:
+        thread.join()
+    
     total_start_time = (time.time() - start_all_time) * 1000
-    print(f"All {len(containers_info)} containers started in {total_start_time:.2f} ms")
+    print(f"All {len(containers_info)} containers completed in {total_start_time:.2f} ms")
     
     # 收集每个容器的指标
     for container_info in containers_info:
@@ -939,8 +908,6 @@ def main():
                        help='Base output directory for results (default: results)')
     parser.add_argument('--max-instances', type=int, default=16,
                        help='Maximum number of instances to test (default: 16)')
-    parser.add_argument('--warmup-runs', type=int, default=1,
-                       help='Number of warmup runs before actual test (default: 1)')
     
     args = parser.parse_args()
     
@@ -965,7 +932,6 @@ def main():
             'total_memory_mb': args.total_memory_mb,
             'volume': args.volume,
             'max_instances': args.max_instances,
-            'warmup_runs': args.warmup_runs,
             'note': 'All containers share the total resource limits, not per-container limits',
         }, f, indent=2)
     
@@ -992,8 +958,7 @@ def main():
                 app_config=app_config,
                 total_cpus=args.total_cpus,
                 volume=args.volume,
-                total_memory_mb=args.total_memory_mb,
-                warmup_runs=args.warmup_runs
+                total_memory_mb=args.total_memory_mb
             )
             
             current_memory = sum([m.pss_mb for m in result.container_metrics])
@@ -1048,8 +1013,7 @@ def main():
                     app_config=app_config,
                     total_cpus=args.total_cpus,
                     volume=args.volume,
-                    total_memory_mb=args.total_memory_mb,
-                    warmup_runs=args.warmup_runs
+                    total_memory_mb=args.total_memory_mb
                 )
                 
                 current_memory = sum([m.pss_mb for m in result.container_metrics])
