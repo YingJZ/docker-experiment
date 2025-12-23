@@ -1,0 +1,67 @@
+[
+  {
+    "n": 1,
+    "memory_full": false,
+    "metrics": [
+      {
+        "container_id": "4f1e4cab617d326e9ba0342bb1e64ff09abd1d00e614eb776f7e71c3e992452e",
+        "start_duration": 445.847749710083,
+        "init_ms": 493.715763092041,
+        "import_ms": 4083.9999999999995,
+        "load_ms": 233.0,
+        "warmup_ms": 76.0,
+        "p95_latency": 41.23,
+        "avg_latency": 38.6294,
+        "min_latency": 36.31,
+        "max_latency": 47.44,
+        "max_pss_mb": 318.02734375,
+        "avg_pss_mb": 243.49816176470588,
+        "pid": 3109105,
+        "latencies_count": 100
+      }
+    ]
+  },
+  {
+    "n": 2,
+    "memory_full": false,
+    "metrics": [
+      {
+        "container_id": "34fb52630a96d08b1e0a39b8d449520bd08d4462cef797c16efc354768d3b822",
+        "start_duration": 552.3154735565186,
+        "init_ms": 592.2503471374512,
+        "import_ms": 4177.0,
+        "load_ms": 465.0,
+        "warmup_ms": 2108.0,
+        "p95_latency": 177.04,
+        "avg_latency": 115.256,
+        "min_latency": 73.69,
+        "max_latency": 229.86,
+        "max_pss_mb": 276.978515625,
+        "avg_pss_mb": 236.125,
+        "pid": 3109587,
+        "latencies_count": 100
+      },
+      {
+        "container_id": "8b534da19beebd39e0fc5d7fe82ad65af71d52fbfbd950b4b75dff058acc5479",
+        "start_duration": 547.1076965332031,
+        "init_ms": 592.7169322967529,
+        "import_ms": 4192.0,
+        "load_ms": 461.0,
+        "warmup_ms": 2111.0,
+        "p95_latency": 184.72,
+        "avg_latency": 114.9936,
+        "min_latency": 74.01,
+        "max_latency": 236.09,
+        "max_pss_mb": 277.205078125,
+        "avg_pss_mb": 236.12034696691177,
+        "pid": 3109578,
+        "latencies_count": 100
+      }
+    ]
+  },
+  {
+    "n": 4,
+    "memory_full": false,
+    "metrics": []
+  }
+]
