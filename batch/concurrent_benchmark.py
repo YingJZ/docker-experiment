@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
-# INSTANCE_COUNTS = [1, 2, 4, 6, 8, 10, 12, 14, 16]
-INSTANCE_COUNTS = [10, 12, 14, 16]
+INSTANCE_COUNTS = [1, 2, 4, 6, 8, 10, 12, 14, 16]
+# INSTANCE_COUNTS = [10, 12, 14, 16]
 
 print(f"\033[92mINFO: INSTANCE_COUNTS={INSTANCE_COUNTS}\033[0m")
 
