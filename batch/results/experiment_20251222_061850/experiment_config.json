@@ -1,9 +1,0 @@
-{
-  "start_time": "20251222_061850",
-  "memory_limit": "2g",
-  "cpus": "0-1",
-  "volume": "/home/yingjiaze/experiment/batch:/app",
-  "max_memory_mb": 4096,
-  "max_instances": 8,
-  "warmup_runs": 2
-}
