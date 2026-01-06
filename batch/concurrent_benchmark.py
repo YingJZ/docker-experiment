@@ -165,27 +165,44 @@ def get_process_mem_breakdown(pid: int) -> Dict[str, float]:
 def read_cgroup_memory_stat(pid: int) -> Dict[str, float]:
     """
     读取进程所在 cgroup 的 memory.stat，返回 MB。
+    同时兼容 cgroup v1 与 v2。
     """
     try:
         cgroup_path = f"/proc/{pid}/cgroup"
-        memory_rel = None
+        is_unified = os.path.exists("/sys/fs/cgroup/cgroup.controllers")  # cgroup v2 判定
+        rel_path = None
+
         with open(cgroup_path, 'r') as f:
             for line in f:
-                if ':memory:' in line:
-                    # 行格式形如: 0:memory:/docker/<id>
-                    parts = line.strip().split(':')
-                    if len(parts) >= 3:
-                        memory_rel = parts[2]
+                parts = line.strip().split(':')
+                if len(parts) < 3:
+                    continue
+                subsystems = parts[1]
+                candidate = parts[2]
+
+                # cgroup v2: 行形如 "0::/system.slice/xxx.scope"
+                if is_unified and subsystems == '':
+                    rel_path = candidate
                     break
-        if not memory_rel:
+
+                # cgroup v1: 找包含 memory 的子系统
+                if 'memory' in subsystems.split(','):
+                    rel_path = candidate
+                    break
+
+        if not rel_path:
             return {}
-        stat_path = os.path.join('/sys/fs/cgroup', memory_rel.lstrip('/'), 'memory.stat')
+
+        root = "/sys/fs/cgroup" if is_unified else "/sys/fs/cgroup/memory"
+        stat_path = os.path.join(root, rel_path.lstrip('/'), 'memory.stat')
+        if not os.path.exists(stat_path):
+            return {}
+
         stats: Dict[str, float] = {}
         with open(stat_path, 'r') as f:
             for line in f:
                 k, v = line.split()
-                # 转 MB，避免输出过大
-                stats[k] = float(v) / (1024.0 * 1024.0)
+                stats[k] = float(v) / (1024.0 * 1024.0)  # 转 MB
         return stats
     except Exception:
         return {}
