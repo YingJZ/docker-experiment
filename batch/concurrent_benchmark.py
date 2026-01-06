@@ -87,6 +87,9 @@ class ContainerMetrics:
     p95_latency: float
     max_pss_mb: float  # 改为记录峰值
     avg_pss_mb: float  # 记录平均值
+    mem_breakdown_max: Dict[str, float]  # 聚合后的 smaps_rollup 最大值
+    mem_breakdown_avg: Dict[str, float]  # 聚合后的 smaps_rollup 平均值
+    cgroup_mem_stat: Dict[str, float]    # 采样到的 cgroup memory.stat（最后一次）
     pid: Optional[int] = None
 
 @dataclass
@@ -120,6 +123,72 @@ def get_process_pss(pid: int) -> float:
         return 0.0
     except Exception:
         return 0.0
+
+def get_process_mem_breakdown(pid: int) -> Dict[str, float]:
+    """
+    从 /proc/<pid>/smaps_rollup 抽取一次性的内存组成（MB）。
+    相比逐行 smaps，rollup 代价低，可用于采样。
+    """
+    rollup_path = f"/proc/{pid}/smaps_rollup"
+    fields = {
+        'Pss:': 'pss_mb',
+        'Rss:': 'rss_mb',
+        'Shared_Clean:': 'shared_clean_mb',
+        'Shared_Dirty:': 'shared_dirty_mb',
+        'Private_Clean:': 'private_clean_mb',
+        'Private_Dirty:': 'private_dirty_mb',
+        'Swap:': 'swap_mb',
+        'AnonHugePages:': 'anon_huge_mb'
+    }
+    out: Dict[str, float] = {v: 0.0 for v in fields.values()}
+    try:
+        with open(rollup_path, 'r') as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) < 2:
+                    continue
+                key = parts[0]
+                if key in fields:
+                    try:
+                        kb = float(parts[1])
+                        out[fields[key]] = kb / 1024.0
+                    except ValueError:
+                        continue
+    except FileNotFoundError:
+        return {}
+    except PermissionError:
+        return {}
+    except Exception:
+        return {}
+    return out
+
+def read_cgroup_memory_stat(pid: int) -> Dict[str, float]:
+    """
+    读取进程所在 cgroup 的 memory.stat，返回 MB。
+    """
+    try:
+        cgroup_path = f"/proc/{pid}/cgroup"
+        memory_rel = None
+        with open(cgroup_path, 'r') as f:
+            for line in f:
+                if ':memory:' in line:
+                    # 行格式形如: 0:memory:/docker/<id>
+                    parts = line.strip().split(':')
+                    if len(parts) >= 3:
+                        memory_rel = parts[2]
+                    break
+        if not memory_rel:
+            return {}
+        stat_path = os.path.join('/sys/fs/cgroup', memory_rel.lstrip('/'), 'memory.stat')
+        stats: Dict[str, float] = {}
+        with open(stat_path, 'r') as f:
+            for line in f:
+                k, v = line.split()
+                # 转 MB，避免输出过大
+                stats[k] = float(v) / (1024.0 * 1024.0)
+        return stats
+    except Exception:
+        return {}
 
 def create_resource_limited_slice(test_name: str, allowed_cpus: str, total_memory_mb: int) -> Optional[str]:
     """
@@ -200,8 +269,10 @@ def run_container_task(idx: int, app_name: str, test_name: str,
         start_duration = (time.time() - start_cmd_time) * 1000
         print(f"[{container_name}] Started, ID: {container_id[:12]}")
         
-        # 2. 监控循环 (采样多次取最大值)
+        # 2. 监控循环 (采样多次)
         pss_samples = []
+        mem_samples = []
+        cgroup_samples = []
         pid = None
         container_finished = False
         wait_iterations = 0
@@ -239,6 +310,12 @@ def run_container_task(idx: int, app_name: str, test_name: str,
                     current_pss = get_process_pss(pid)
                     if current_pss > 0:
                         pss_samples.append(current_pss)
+                    mem_breakdown = get_process_mem_breakdown(pid)
+                    if mem_breakdown:
+                        mem_samples.append(mem_breakdown)
+                    cg_stat = read_cgroup_memory_stat(pid)
+                    if cg_stat:
+                        cgroup_samples.append(cg_stat)
             except ValueError:
                 pass
             
@@ -267,6 +344,22 @@ def run_container_task(idx: int, app_name: str, test_name: str,
             p95 = lats[int(len(lats)*0.95)]
             max_pss = max(pss_samples) if pss_samples else 0.0
             avg_pss = statistics.mean(pss_samples) if pss_samples else 0.0
+            def aggregate_breakdown(samples: List[Dict[str, float]]) -> Tuple[Dict[str, float], Dict[str, float]]: # 对采样数据求最大值 & 取平均
+                if not samples:
+                    return {}, {}
+                keys: Set[str] = set()
+                for s in samples:
+                    keys.update(s.keys())
+                max_out: Dict[str, float] = {}
+                avg_out: Dict[str, float] = {}
+                for k in keys:
+                    vals = [s.get(k, 0.0) for s in samples]
+                    max_out[k] = max(vals)
+                    avg_out[k] = statistics.mean(vals)
+                return max_out, avg_out
+
+            mem_max, mem_avg = aggregate_breakdown(mem_samples)
+            cgroup_last = cgroup_samples[-1] if cgroup_samples else {}
             
             metrics = ContainerMetrics(
                 container_id=container_id,
@@ -275,6 +368,8 @@ def run_container_task(idx: int, app_name: str, test_name: str,
                 load_ms=timings['load_ms'], warmup_ms=timings['warmup_ms'],
                 latencies=lats, p95_latency=p95,
                 max_pss_mb=max_pss, avg_pss_mb=avg_pss,
+                mem_breakdown_max=mem_max, mem_breakdown_avg=mem_avg,
+                cgroup_mem_stat=cgroup_last,
                 pid=pid
             )
             results_list.append(metrics)
@@ -469,6 +564,9 @@ def main():
                             'max_latency': max(m.latencies) if m.latencies else 0,
                             'max_pss_mb': m.max_pss_mb,
                             'avg_pss_mb': m.avg_pss_mb,
+                            'mem_breakdown_max': m.mem_breakdown_max,
+                            'mem_breakdown_avg': m.mem_breakdown_avg,
+                            'cgroup_mem_stat': m.cgroup_mem_stat,
                             'pid': m.pid,
                             'latencies_count': len(m.latencies)
                         } 
