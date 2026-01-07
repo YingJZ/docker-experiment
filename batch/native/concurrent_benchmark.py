@@ -101,6 +101,9 @@ class ProcessMetrics:
     p95_latency: float
     max_pss_mb: float
     avg_pss_mb: float
+    mem_breakdown_max: Dict[str, float]  # 聚合后的 smaps_rollup 最大值
+    mem_breakdown_avg: Dict[str, float]  # 聚合后的 smaps_rollup 平均值
+    cgroup_mem_stat: Dict[str, float]    # 采样到的 cgroup memory.stat（最后一次）
 
 @dataclass
 class TestResult:
@@ -129,6 +132,110 @@ def get_process_pss(pid: int) -> float:
     except Exception:
         return 0.0
 
+def get_process_mem_breakdown(pid: int) -> Dict[str, float]:
+    """
+    从 /proc/<pid>/smaps_rollup 抽取一次性的内存组成（MB）。
+    相比逐行 smaps，rollup 代价低，可用于采样。
+    """
+    rollup_path = f"/proc/{pid}/smaps_rollup"
+    fields = {
+        'Pss:': 'pss_mb',
+        'Rss:': 'rss_mb',
+        'Shared_Clean:': 'shared_clean_mb',
+        'Shared_Dirty:': 'shared_dirty_mb',
+        'Private_Clean:': 'private_clean_mb',
+        'Private_Dirty:': 'private_dirty_mb',
+        'Swap:': 'swap_mb',
+        'AnonHugePages:': 'anon_huge_mb'
+    }
+    out: Dict[str, float] = {v: 0.0 for v in fields.values()}
+    try:
+        with open(rollup_path, 'r') as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) < 2:
+                    continue
+                key = parts[0]
+                if key in fields:
+                    try:
+                        kb = float(parts[1])
+                        out[fields[key]] = kb / 1024.0
+                    except ValueError:
+                        continue
+    except FileNotFoundError:
+        return {}
+    except PermissionError:
+        return {}
+    except Exception:
+        return {}
+    return out
+
+def read_cgroup_memory_stat(pid: int) -> Dict[str, float]:
+    """
+    读取进程所在 cgroup 的 memory.stat，返回 MB。
+    同时兼容 cgroup v1 与 v2。
+    """
+    try:
+        cgroup_path = f"/proc/{pid}/cgroup"
+        is_unified = os.path.exists("/sys/fs/cgroup/cgroup.controllers")  # cgroup v2 判定
+        rel_path = None
+
+        with open(cgroup_path, 'r') as f:
+            for line in f:
+                parts = line.strip().split(':')
+                if len(parts) < 3:
+                    continue
+                subsystems = parts[1]
+                candidate = parts[2]
+
+                # cgroup v2: 行形如 "0::/system.slice/xxx.scope"
+                if is_unified and subsystems == '':
+                    rel_path = candidate
+                    break
+
+                # cgroup v1: 找包含 memory 的子系统
+                if 'memory' in subsystems.split(','):
+                    rel_path = candidate
+                    break
+
+        if not rel_path:
+            return {}
+
+        root = "/sys/fs/cgroup" if is_unified else "/sys/fs/cgroup/memory"
+        stat_path = os.path.join(root, rel_path.lstrip('/'), 'memory.stat')
+        if not os.path.exists(stat_path):
+            return {}
+
+        stats: Dict[str, float] = {}
+        with open(stat_path, 'r') as f:
+            for line in f:
+                k, v = line.split()
+                stats[k] = float(v) / (1024.0 * 1024.0)  # 转 MB
+        return stats
+    except Exception:
+        return {}
+
+def verify_cpuset_controller():
+    """检查并尝试启用 cpuset 控制器（如果可能）"""
+    try:
+        # 检查 cgroup v2
+        if os.path.exists("/sys/fs/cgroup/cgroup.controllers"):
+            controllers_path = "/sys/fs/cgroup/cgroup.subtree_control"
+            if os.path.exists(controllers_path):
+                with open(controllers_path, 'r') as f:
+                    controllers = f.read().strip()
+                if 'cpuset' not in controllers:
+                    print("Warning: cpuset controller not enabled in cgroup v2")
+                    print(f"  Current controllers: {controllers}")
+                    print("  You may need to enable it manually:")
+                    print(f"    echo '+cpuset' | sudo tee {controllers_path}")
+        else:
+            # cgroup v1: 检查 cpuset 挂载点
+            if not os.path.exists("/sys/fs/cgroup/cpuset"):
+                print("Warning: cpuset cgroup not mounted")
+    except Exception as e:
+        print(f"Warning: Could not check cpuset controller: {e}")
+
 def create_resource_limited_slice(test_name: str, allowed_cpus: str, total_memory_mb: int) -> Optional[str]:
     """
     创建一个 Systemd Slice，设置 AllowedCPUs 和 MemoryMax
@@ -137,6 +244,9 @@ def create_resource_limited_slice(test_name: str, allowed_cpus: str, total_memor
     memory_bytes = int(total_memory_mb * 1024 * 1024)
 
     print(f"Creating Slice {slice_name}: AllowedCPUs={allowed_cpus}, MemMax={total_memory_mb}MB")
+    
+    # 检查 cpuset 控制器
+    verify_cpuset_controller()
 
     try:
         subprocess.run(['systemctl', 'start', slice_name], check=True, capture_output=True)
@@ -144,6 +254,82 @@ def create_resource_limited_slice(test_name: str, allowed_cpus: str, total_memor
                       check=True, capture_output=True)
         subprocess.run(['systemctl', 'set-property', slice_name, f'MemoryMax={memory_bytes}'], 
                       check=True, capture_output=True)
+        
+        # 验证 CPU 限制是否生效
+        result = subprocess.run(
+            ['systemctl', 'show', slice_name, '-p', 'AllowedCPUs', '--value'],
+            capture_output=True, text=True, check=True
+        )
+        actual_cpus = result.stdout.strip()
+        if actual_cpus != allowed_cpus:
+            print(f"Warning: Slice AllowedCPUs mismatch. Expected: {allowed_cpus}, Got: {actual_cpus}")
+        
+        # 在 cgroup v1 下，systemd 的 AllowedCPUs 可能不工作
+        # 我们将使用 taskset 来确保 CPU 限制生效
+        # 这里尝试直接设置 cgroup cpuset（如果可能）
+        cpuset_set = False
+        try:
+            # 获取 slice 的 cgroup 路径
+            cgroup_result = subprocess.run(
+                ['systemctl', 'show', slice_name, '-p', 'ControlGroup', '--value'],
+                capture_output=True, text=True, check=True
+            )
+            cgroup_path = cgroup_result.stdout.strip()
+            if cgroup_path:
+                # 检查是否是 cgroup v2
+                if os.path.exists("/sys/fs/cgroup/cgroup.controllers"):
+                    # cgroup v2: 设置 cpuset.cpus
+                    cpuset_dir = f"/sys/fs/cgroup{cgroup_path}"
+                    cpuset_path = f"{cpuset_dir}/cpuset.cpus"
+                    if os.path.exists(cpuset_dir):
+                        try:
+                            with open(cpuset_path, 'w') as f:
+                                f.write(allowed_cpus)
+                            print(f"✓ Set cpuset.cpus={allowed_cpus} via cgroup v2")
+                            cpuset_set = True
+                        except (IOError, PermissionError) as e:
+                            print(f"Warning: Could not write cpuset.cpus: {e}")
+                else:
+                    # cgroup v1: systemd 可能不使用 cpuset 子系统
+                    # 尝试在 /sys/fs/cgroup/cpuset 下创建对应的目录
+                    cpuset_base = "/sys/fs/cgroup/cpuset"
+                    cpuset_dir = f"{cpuset_base}{cgroup_path}"
+                    
+                    # 尝试创建目录（如果不存在）
+                    if not os.path.exists(cpuset_dir):
+                        try:
+                            os.makedirs(cpuset_dir, exist_ok=True)
+                        except (OSError, PermissionError):
+                            pass
+                    
+                    if os.path.exists(cpuset_dir):
+                        cpuset_cpus_path = f"{cpuset_dir}/cpuset.cpus"
+                        cpuset_mems_path = f"{cpuset_dir}/cpuset.mems"
+                        
+                        try:
+                            # 读取根 cpuset 的 mems 设置
+                            root_mems_path = f"{cpuset_base}/cpuset.mems"
+                            if os.path.exists(root_mems_path):
+                                with open(root_mems_path, 'r') as f:
+                                    mems = f.read().strip()
+                            else:
+                                mems = "0"
+                            
+                            # 设置 cpuset.cpus
+                            with open(cpuset_cpus_path, 'w') as f:
+                                f.write(allowed_cpus)
+                            # 设置 cpuset.mems
+                            with open(cpuset_mems_path, 'w') as f:
+                                f.write(mems)
+                            print(f"✓ Set cpuset.cpus={allowed_cpus} via cgroup v1")
+                            cpuset_set = True
+                        except (IOError, PermissionError) as e:
+                            print(f"Warning: Could not set cpuset in cgroup v1: {e}")
+        except Exception as e:
+            print(f"Warning: Could not set cgroup cpuset: {e}")
+        
+        if not cpuset_set:
+            print(f"Note: Will use taskset to enforce CPU affinity to CPUs: {allowed_cpus}")
         
         with CLEANUP_LOCK:
             ACTIVE_SLICES.add(slice_name)
@@ -169,16 +355,19 @@ def run_process_task(idx: int, test_name: str, slice_name: str,
     env['OPENBLAS_NUM_THREADS'] = str(threads_limit)
     
     # 使用 systemd-run 在 slice 下运行进程
+    # 对于 cgroup v1，systemd 的 AllowedCPUs 可能不工作
+    # 因此使用 taskset 作为额外的 CPU 限制
     # --scope: 创建一个 scope unit 而非 service
     # --slice: 指定父 slice
-    # -p AllowedCPUs: 设置 CPU 亲和性（cgroup cpuset）
+    # 使用 taskset 确保进程和所有线程都限制在指定 CPU 上
+    taskset_cmd = ['taskset', '-c', allowed_cpus]
     cmd = [
         'systemd-run',
         '--scope',  # 使用 scope 而非 service，便于直接获取输出
         f'--slice={slice_name}',
         f'--unit={process_name}',
-        '-p', f'AllowedCPUs={allowed_cpus}',
         '--',
+    ] + taskset_cmd + [
         python_path,
         str(BENCHMARK_SCRIPT)
     ]
@@ -222,8 +411,23 @@ def run_process_task(idx: int, test_name: str, slice_name: str,
         start_duration = (time.time() - start_cmd_time) * 1000
         print(f"[{process_name}] Started, PID: {pid}")
         
-        # 监控循环
+        # 验证 CPU 亲和性是否设置成功（使用 taskset 检查）
+        if pid and pid > 0:
+            try:
+                result = subprocess.run(
+                    ['taskset', '-p', str(pid)],
+                    capture_output=True, text=True, timeout=2
+                )
+                if result.returncode == 0:
+                    cpu_mask = result.stdout.strip().split()[-1]
+                    print(f"[{process_name}] CPU affinity mask: {cpu_mask}")
+            except Exception:
+                pass
+        
+        # 监控循环 (采样多次)
         pss_samples = []
+        mem_samples = []
+        cgroup_samples = []
         max_wait = 300  # 最多等待 150 秒
         
         for iteration in range(max_wait):
@@ -232,11 +436,17 @@ def run_process_task(idx: int, test_name: str, slice_name: str,
             if poll_result is not None:
                 break
             
-            # 采样 PSS
+            # 采样 PSS、内存组成和 cgroup 统计
             if pid and pid > 0:
                 current_pss = get_process_pss(pid)
                 if current_pss > 0:
                     pss_samples.append(current_pss)
+                mem_breakdown = get_process_mem_breakdown(pid)
+                if mem_breakdown:
+                    mem_samples.append(mem_breakdown)
+                cg_stat = read_cgroup_memory_stat(pid)
+                if cg_stat:
+                    cgroup_samples.append(cg_stat)
             
             time.sleep(0.5)
         
@@ -265,6 +475,24 @@ def run_process_task(idx: int, test_name: str, slice_name: str,
             max_pss = max(pss_samples) if pss_samples else 0.0
             avg_pss = statistics.mean(pss_samples) if pss_samples else 0.0
             
+            def aggregate_breakdown(samples: List[Dict[str, float]]) -> Tuple[Dict[str, float], Dict[str, float]]:
+                """对采样数据求最大值 & 取平均"""
+                if not samples:
+                    return {}, {}
+                keys: Set[str] = set()
+                for s in samples:
+                    keys.update(s.keys())
+                max_out: Dict[str, float] = {}
+                avg_out: Dict[str, float] = {}
+                for k in keys:
+                    vals = [s.get(k, 0.0) for s in samples]
+                    max_out[k] = max(vals)
+                    avg_out[k] = statistics.mean(vals)
+                return max_out, avg_out
+
+            mem_max, mem_avg = aggregate_breakdown(mem_samples)
+            cgroup_last = cgroup_samples[-1] if cgroup_samples else {}
+            
             metrics = ProcessMetrics(
                 process_name=process_name,
                 pid=pid or 0,
@@ -276,7 +504,10 @@ def run_process_task(idx: int, test_name: str, slice_name: str,
                 latencies=lats,
                 p95_latency=p95,
                 max_pss_mb=max_pss,
-                avg_pss_mb=avg_pss
+                avg_pss_mb=avg_pss,
+                mem_breakdown_max=mem_max,
+                mem_breakdown_avg=mem_avg,
+                cgroup_mem_stat=cgroup_last
             )
             results_list.append(metrics)
             print(f"[{process_name}] Completed: P95={p95:.2f}ms, MaxPSS={max_pss:.1f}MB")
@@ -468,6 +699,9 @@ def main():
                             'max_latency': max(m.latencies) if m.latencies else 0,
                             'max_pss_mb': m.max_pss_mb,
                             'avg_pss_mb': m.avg_pss_mb,
+                            'mem_breakdown_max': m.mem_breakdown_max,
+                            'mem_breakdown_avg': m.mem_breakdown_avg,
+                            'cgroup_mem_stat': m.cgroup_mem_stat,
                             'latencies_count': len(m.latencies)
                         } 
                         for m in r.process_metrics
