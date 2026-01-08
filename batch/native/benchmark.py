@@ -8,7 +8,7 @@ import time
 import os
 import sys
 import platform
-from safetensors.torch import load_file     # 用于读取 .safetensors 格式的权重
+# from safetensors.torch import load_file     # 用于读取 .safetensors 格式的权重
 
 def print_runtime_info():
     print("=== Runtime Info (Native) ===")
@@ -75,12 +75,12 @@ def main():
     if weights_path is None:
         # 尝试多个常见路径
         candidates = [
-            os.path.join(os.path.dirname(__file__), "..", "mobilenet_v2-imagenet1k-v1.safetensors"),
-            os.path.join(os.path.dirname(__file__), "mobilenet_v2-imagenet1k-v1.safetensors"),
-            "mobilenet_v2-imagenet1k-v1.safetensors",
-            # os.path.join(os.path.dirname(__file__), "..", "mobilenet_v2-imagenet1k-v1.pth"),
-            # os.path.join(os.path.dirname(__file__), "mobilenet_v2-imagenet1k-v1.pth"),
-            # "mobilenet_v2-imagenet1k-v1.pth",
+            # os.path.join(os.path.dirname(__file__), "..", "mobilenet_v2-imagenet1k-v1.safetensors"),
+            # os.path.join(os.path.dirname(__file__), "mobilenet_v2-imagenet1k-v1.safetensors"),
+            # "mobilenet_v2-imagenet1k-v1.safetensors",
+            os.path.join(os.path.dirname(__file__), "..", "mobilenet_v2-imagenet1k-v1.pth"),
+            os.path.join(os.path.dirname(__file__), "mobilenet_v2-imagenet1k-v1.pth"),
+            "mobilenet_v2-imagenet1k-v1.pth",
         ]
         for c in candidates:
             if os.path.exists(c):
@@ -88,12 +88,12 @@ def main():
                 break
     
     if weights_path and os.path.exists(weights_path):
-        # try:
-        #     sd = torch.load(weights_path, map_location="cpu", weights_only=True, mmap=True)
-        # except TypeError:
-        #     sd = torch.load(weights_path, map_location="cpu", mmap=True)
-        # model.load_state_dict(sd, strict=True)
-        sd = load_file(weights_path, device="cpu")
+        try:
+            sd = torch.load(weights_path, map_location="cpu", weights_only=True, mmap=True)
+        except TypeError:
+            sd = torch.load(weights_path, map_location="cpu", mmap=True)
+        model.load_state_dict(sd, strict=True)
+        # sd = load_file(weights_path, device="cpu")
         log(f"Loaded weights from {weights_path}")
     else:
         log(f"Weights file not found, using random weights")
