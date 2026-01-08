@@ -1,6 +1,6 @@
-## 📊 容器并行 vs 裸机并行：关键差异分析
+## 容器并行 vs 裸机并行：关键差异分析
 
-### 🔑 关键发现 1：内存页面共享差异显著 (最重要)
+### 关键发现 1：内存页面共享差异显著 (最重要)
 
 | n    | Native shared_clean | Container shared_clean | 差异      | 比值  |
 | :--- | :------------------ | :--------------------- | :-------- | :---- |
@@ -12,7 +12,7 @@
 
 ------
 
-### 🔑 关键发现 2：PSS 内存效率差异
+### 关键发现 2：PSS 内存效率差异
 
 PSS 效率 = PSS_sum / (RSS_mean × n)
 
@@ -31,7 +31,7 @@ PSS 效率 = PSS_sum / (RSS_mean × n)
 
 ------
 
-### 🔑 关键发现 3：容器初始化开销巨大
+### 关键发现 3：容器初始化开销巨大
 
 | n    | Native init_ms | Container init_ms | 开销     | 开销% |
 | :--- | :------------- | :---------------- | :------- | :---- |
@@ -43,7 +43,7 @@ PSS 效率 = PSS_sum / (RSS_mean × n)
 
 ------
 
-### 🔑 关键发现 4：总内存使用差异
+### 关键发现 4：总内存使用差异
 
 当 n ≥ 4 时，Container 的总 PSS 内存比 Native 高 2-6%：
 
@@ -55,7 +55,7 @@ PSS 效率 = PSS_sum / (RSS_mean × n)
 
 ------
 
-## 💡 综合结论
+## 综合结论
 
 ### 容器化并行的主要问题：
 
@@ -65,13 +65,13 @@ PSS 效率 = PSS_sum / (RSS_mean × n)
 
 - Container 只能共享 ~95 MB，损失约 55 MB/进程
 
-1. 启动开销显著
+2. 启动开销显著
 
 - 容器启动比原生进程慢 6-9 倍
 
 - 在高并发场景下，累积开销可达数秒
 
-1. 内存利用率降低
+3. 内存利用率降低
 
 - 对于 ML serving 等场景，这意味着同样的内存能支持更少的实例
 
@@ -83,30 +83,26 @@ PSS 效率 = PSS_sum / (RSS_mean × n)
 
 - 快速扩缩容场景：容器启动延迟会影响响应速度
 
-- 大规模 ML 推理：建议考虑进程级并行或使用容器共享技术（如 Kata Containers with DAX）
-
 ------
 
-## 📁 生成的分析图表
-
-所有图表已保存到 /home/yingjiaze/experiment/batch/analysis_results/：
+## 生成的分析图表
 
 ### 关键发现综合图 
 
-![关键发现综合图](batch/analysis_results/key_findings_summary.png)
+![](batch/analysis_results/key_findings_summary.png)
 
 ### 内存共享详细分析
 
-![内存共享详细分析](batch/analysis_results/memory_sharing_analysis.png)
+![](batch/analysis_results/memory_sharing_analysis.png)
 
 ### 内存开销详情
 
-![内存开销详情](batch/analysis_results/memory_overhead_detail.png)
+![](batch/analysis_results/memory_overhead_detail.png)
 
 ### 初始化开销分析
 
-![初始化开销分析](batch/analysis_results/init_overhead_analysis.png)
+![](batch/analysis_results/init_overhead_analysis.png)
 
-### 总启动时间对比
+### 启动时间各阶段占比
 
-![总启动时间对比](batch/analysis_results/total_startup_time.png)
+![](batch/stacked_bar_comparison.png)
