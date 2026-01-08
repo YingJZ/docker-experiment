@@ -53,6 +53,13 @@ def log(msg):
 start_time = time.time()
 print(f"start time: {start_time:.3f}")
 
+# 读取 Python 启动前的时间戳（如果有）
+python_start_ts = os.environ.get('PYTHON_START_TS', None)
+if python_start_ts:
+    python_start_time = float(python_start_ts)
+    python_init_ms = (start_time - python_start_time) * 1000.0
+    print(f"python init time: {python_init_ms:.3f}ms (from PYTHON_START_TS)")
+
 log("Python Process Started, Importing Torch...")
 import_start = time.time()
 

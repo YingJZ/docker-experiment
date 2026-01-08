@@ -2,7 +2,7 @@
 
 代码修改：当前实验修复了 init_ms 的计算方式，使其能够精确测量纯粹的 Python 解释器初始化时间，排除 systemd、cgroup 等系统级开销的影响。（具体可见 [MODIFICATION_SUMMARY.md](MODIFICATION_SUMMARY.md)）
 
-配置修改：内存限制改为 4GB （CPU 限制保持 2 核不变）
+配置修改：**内存限制改为 4GB** （CPU 限制保持 2 核不变）
 
 ## 命令行输出(部分)
 

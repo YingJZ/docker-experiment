@@ -5,7 +5,7 @@ Native Concurrent Benchmark - 不使用容器，直接在主机上并发运行�
 """
 
 # 测试实例数配置
-INSTANCE_COUNTS = [1, 2, 4, 6, 8, 10, 12, 14, 16]
+INSTANCE_COUNTS = [1, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20]
 
 print(f"\033[92mINFO: Native benchmark, INSTANCE_COUNTS={INSTANCE_COUNTS}\033[0m")
 
@@ -20,6 +20,7 @@ import argparse
 import sys
 import signal
 import atexit
+import shlex
 from typing import Dict, List, Tuple, Optional, Set
 from dataclasses import dataclass
 from pathlib import Path
@@ -93,7 +94,8 @@ class ProcessMetrics:
     process_name: str
     pid: int
     start_duration: float
-    init_ms: float
+    init_ms: float  # 从 systemd-run 到脚本开始执行（包含 systemd、cgroup、Python 启动）
+    python_init_ms: float  # 仅 Python 解释器初始化时间（从 Python 进程启动到脚本开始）
     import_ms: float
     load_ms: float
     warmup_ms: float
@@ -360,7 +362,14 @@ def run_process_task(idx: int, test_name: str, slice_name: str,
     # --scope: 创建一个 scope unit 而非 service
     # --slice: 指定父 slice
     # 使用 taskset 确保进程和所有线程都限制在指定 CPU 上
+    # 
+    # 为了精确测量 Python 解释器初始化时间，使用 bash 包装：
+    # 在启动 Python 之前记录时间戳，并通过环境变量传递给 Python
     taskset_cmd = ['taskset', '-c', allowed_cpus]
+    
+    # 构建 bash 命令：在启动 Python 前记录时间戳
+    python_cmd = f'export PYTHON_START_TS=$(date +%s.%N) && exec {shlex.quote(python_path)} {shlex.quote(str(BENCHMARK_SCRIPT))}'
+    
     cmd = [
         'systemd-run',
         '--scope',  # 使用 scope 而非 service，便于直接获取输出
@@ -368,8 +377,7 @@ def run_process_task(idx: int, test_name: str, slice_name: str,
         f'--unit={process_name}',
         '--',
     ] + taskset_cmd + [
-        python_path,
-        str(BENCHMARK_SCRIPT)
+        'bash', '-c', python_cmd
     ]
     
     start_cmd_time = time.time()
@@ -498,6 +506,7 @@ def run_process_task(idx: int, test_name: str, slice_name: str,
                 pid=pid or 0,
                 start_duration=start_duration,
                 init_ms=timings['init_ms'],
+                python_init_ms=timings.get('python_init_ms', 0.0),
                 import_ms=timings['import_ms'],
                 load_ms=timings['load_ms'],
                 warmup_ms=timings['warmup_ms'],
@@ -510,7 +519,8 @@ def run_process_task(idx: int, test_name: str, slice_name: str,
                 cgroup_mem_stat=cgroup_last
             )
             results_list.append(metrics)
-            print(f"[{process_name}] Completed: P95={p95:.2f}ms, MaxPSS={max_pss:.1f}MB")
+            python_init_info = f", PyInit={metrics.python_init_ms:.1f}ms" if metrics.python_init_ms > 0 else ""
+            print(f"[{process_name}] Completed: P95={p95:.2f}ms, MaxPSS={max_pss:.1f}MB{python_init_info}")
         else:
             print(f"[{process_name}] ERROR: No latency data parsed")
             
@@ -524,12 +534,18 @@ def parse_benchmark_output(text: str, start_cmd_time: float):
     """解析 benchmark 输出"""
     start_time = None
     latencies = []
-    timing = {'init_ms': 0.0, 'import_ms': 0.0, 'load_ms': 0.0, 'warmup_ms': 0.0}
+    timing = {'init_ms': 0.0, 'python_init_ms': 0.0, 'import_ms': 0.0, 'load_ms': 0.0, 'warmup_ms': 0.0}
     
     m_start = re.search(r'start time:\s*([0-9.]+)', text)
     if m_start:
         start_time = float(m_start.group(1))
+        # 保留原来的 init_ms（从 systemd-run 到脚本开始）
         timing['init_ms'] = (start_time - start_cmd_time) * 1000.0
+    
+    # 尝试解析 Python 解释器初始化时间（从 PYTHON_START_TS 到脚本开始）
+    m_python_init = re.search(r'python init time:\s*([0-9.]+)ms', text)
+    if m_python_init:
+        timing['python_init_ms'] = float(m_python_init.group(1))
     
     patterns = {
         'import_ms': r'Import Torch Done, Time Spent:\s*([0-9.]+)s',
@@ -690,6 +706,7 @@ def main():
                             'pid': m.pid,
                             'start_duration': m.start_duration,
                             'init_ms': m.init_ms,
+                            'python_init_ms': m.python_init_ms,
                             'import_ms': m.import_ms,
                             'load_ms': m.load_ms,
                             'warmup_ms': m.warmup_ms,
