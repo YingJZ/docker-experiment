@@ -105,7 +105,9 @@ class ProcessMetrics:
     avg_pss_mb: float
     mem_breakdown_max: Dict[str, float]  # 聚合后的 smaps_rollup 最大值
     mem_breakdown_avg: Dict[str, float]  # 聚合后的 smaps_rollup 平均值
-    cgroup_mem_stat: Dict[str, float]    # 采样到的 cgroup memory.stat（最后一次）
+    cgroup_mem_stat_max: Dict[str, float]  # cgroup memory.stat 最大值
+    cgroup_mem_stat_avg: Dict[str, float]  # cgroup memory.stat 平均值
+    cgroup_mem_stat_last: Dict[str, float] # cgroup memory.stat 最后一次采样
 
 @dataclass
 class TestResult:
@@ -499,6 +501,7 @@ def run_process_task(idx: int, test_name: str, slice_name: str,
                 return max_out, avg_out
 
             mem_max, mem_avg = aggregate_breakdown(mem_samples)
+            cgroup_max, cgroup_avg = aggregate_breakdown(cgroup_samples)
             cgroup_last = cgroup_samples[-1] if cgroup_samples else {}
             
             metrics = ProcessMetrics(
@@ -516,7 +519,9 @@ def run_process_task(idx: int, test_name: str, slice_name: str,
                 avg_pss_mb=avg_pss,
                 mem_breakdown_max=mem_max,
                 mem_breakdown_avg=mem_avg,
-                cgroup_mem_stat=cgroup_last
+                cgroup_mem_stat_max=cgroup_max,
+                cgroup_mem_stat_avg=cgroup_avg,
+                cgroup_mem_stat_last=cgroup_last
             )
             results_list.append(metrics)
             python_init_info = f", PyInit={metrics.python_init_ms:.1f}ms" if metrics.python_init_ms > 0 else ""
@@ -666,7 +671,7 @@ def main():
     parser = argparse.ArgumentParser(description="Native concurrent benchmark without Docker")
     parser.add_argument('--allowed-cpus', default='0,1', 
                        help='CPU cores to allow (cpuset), e.g., "0,1" or "0-3"') 
-    parser.add_argument('--mem', type=int, default=2048, 
+    parser.add_argument('--mem', type=int, default=4096, 
                        help='Total Memory for slice in MB')
     parser.add_argument('--python', default=None,
                        help='Path to Python interpreter (default: current venv)')
@@ -718,7 +723,9 @@ def main():
                             'avg_pss_mb': m.avg_pss_mb,
                             'mem_breakdown_max': m.mem_breakdown_max,
                             'mem_breakdown_avg': m.mem_breakdown_avg,
-                            'cgroup_mem_stat': m.cgroup_mem_stat,
+                            'cgroup_mem_stat_max': m.cgroup_mem_stat_max,
+                            'cgroup_mem_stat_avg': m.cgroup_mem_stat_avg,
+                            'cgroup_mem_stat_last': m.cgroup_mem_stat_last,
                             'latencies_count': len(m.latencies)
                         } 
                         for m in r.process_metrics

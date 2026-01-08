@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-INSTANCE_COUNTS = [1, 2, 4, 6, 8, 10, 12, 14, 16]
+INSTANCE_COUNTS = [1, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20]
 # INSTANCE_COUNTS = [10, 12, 14, 16]
 
 print(f"\033[92mINFO: INSTANCE_COUNTS={INSTANCE_COUNTS}\033[0m")
@@ -89,7 +89,9 @@ class ContainerMetrics:
     avg_pss_mb: float  # 记录平均值
     mem_breakdown_max: Dict[str, float]  # 聚合后的 smaps_rollup 最大值
     mem_breakdown_avg: Dict[str, float]  # 聚合后的 smaps_rollup 平均值
-    cgroup_mem_stat: Dict[str, float]    # 采样到的 cgroup memory.stat（最后一次）
+    cgroup_mem_stat_max: Dict[str, float]  # cgroup memory.stat 最大值
+    cgroup_mem_stat_avg: Dict[str, float]  # cgroup memory.stat 平均值
+    cgroup_mem_stat_last: Dict[str, float] # cgroup memory.stat 最后一次采样
     pid: Optional[int] = None
 
 @dataclass
@@ -376,6 +378,7 @@ def run_container_task(idx: int, app_name: str, test_name: str,
                 return max_out, avg_out
 
             mem_max, mem_avg = aggregate_breakdown(mem_samples)
+            cgroup_max, cgroup_avg = aggregate_breakdown(cgroup_samples)
             cgroup_last = cgroup_samples[-1] if cgroup_samples else {}
             
             metrics = ContainerMetrics(
@@ -386,7 +389,9 @@ def run_container_task(idx: int, app_name: str, test_name: str,
                 latencies=lats, p95_latency=p95,
                 max_pss_mb=max_pss, avg_pss_mb=avg_pss,
                 mem_breakdown_max=mem_max, mem_breakdown_avg=mem_avg,
-                cgroup_mem_stat=cgroup_last,
+                cgroup_mem_stat_max=cgroup_max,
+                cgroup_mem_stat_avg=cgroup_avg,
+                cgroup_mem_stat_last=cgroup_last,
                 pid=pid
             )
             results_list.append(metrics)
@@ -538,7 +543,7 @@ def plot_results(results: List[TestResult], out_dir: str):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--allowed-cpus', default='0,1', help='CPU cores to allow (cpuset), e.g., "0,1" or "0-3"') 
-    parser.add_argument('--mem', type=int, default=2048, help='Total Memory for slice in MB')
+    parser.add_argument('--mem', type=int, default=4096, help='Total Memory for slice in MB')
     parser.add_argument('--volume', default=None)
     
     args = parser.parse_args()
@@ -583,7 +588,9 @@ def main():
                             'avg_pss_mb': m.avg_pss_mb,
                             'mem_breakdown_max': m.mem_breakdown_max,
                             'mem_breakdown_avg': m.mem_breakdown_avg,
-                            'cgroup_mem_stat': m.cgroup_mem_stat,
+                            'cgroup_mem_stat_max': m.cgroup_mem_stat_max,
+                            'cgroup_mem_stat_avg': m.cgroup_mem_stat_avg,
+                            'cgroup_mem_stat_last': m.cgroup_mem_stat_last,
                             'pid': m.pid,
                             'latencies_count': len(m.latencies)
                         } 
